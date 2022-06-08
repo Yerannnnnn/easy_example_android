@@ -56,9 +56,34 @@ public class LoginActivity extends AppCompatActivity {
                         if (allGranted) {
                             String username = binding.username.getText().toString();
                             String roomID = binding.roomid.getText().toString();
-                            joinRoom(roomID, username);
+                            joinRoom(roomID, username, false);
                         }
                     });
+            }
+        });
+
+        binding.serverLogin.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!checkAppID()) {
+                    Toast.makeText(getApplication(),
+                            "please set your appID to AppCenter.java", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (! validateInput()) {
+                    Toast.makeText(getApplication(),
+                            "input cannot be null", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                PermissionX.init(LoginActivity.this)
+                        .permissions(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+                        .request((allGranted, grantedList, deniedList) -> {
+                            if (allGranted) {
+                                String username = binding.username.getText().toString();
+                                String roomID = binding.roomid.getText().toString();
+                                joinRoom(roomID, username, true);
+                            }
+                        });
             }
         });
 
@@ -140,13 +165,18 @@ public class LoginActivity extends AppCompatActivity {
         });
     }
 
-    private void joinRoom(String roomID ,String username) {
+    private void joinRoom(String roomID ,String username, Boolean isServer) {
         binding.loading.setVisibility(View.VISIBLE);
         String userID = System.currentTimeMillis() + "";
         ZegoUser user = new ZegoUser(userID, username);
         String token = ExpressManager.generateToken(userID, AppCenter.appID, AppCenter.serverSecret);
         int mediaOptions = ZegoMediaOptions.autoPlayAudio | ZegoMediaOptions.autoPlayVideo |
             ZegoMediaOptions.publishLocalAudio | ZegoMediaOptions.publishLocalVideo;
+
+        if(isServer){
+            ExpressManager.getInstance().enableMirrorARServerLogic();
+        }
+
         ExpressManager.getInstance().joinRoom(roomID, user, token, mediaOptions, new IZegoRoomLoginCallback() {
             @Override
             public void onRoomLoginResult(int errorCode, JSONObject jsonObject) {

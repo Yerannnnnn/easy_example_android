@@ -8,12 +8,14 @@ import im.zego.zegoexpress.ZegoExpressEngine;
 import im.zego.zegoexpress.callback.IZegoEventHandler;
 import im.zego.zegoexpress.callback.IZegoRoomLoginCallback;
 import im.zego.zegoexpress.constants.ZegoPlayerState;
+import im.zego.zegoexpress.constants.ZegoPublishChannel;
 import im.zego.zegoexpress.constants.ZegoPublisherState;
 import im.zego.zegoexpress.constants.ZegoRemoteDeviceState;
 import im.zego.zegoexpress.constants.ZegoRoomState;
 import im.zego.zegoexpress.constants.ZegoScenario;
 import im.zego.zegoexpress.constants.ZegoStreamQualityLevel;
 import im.zego.zegoexpress.constants.ZegoUpdateType;
+import im.zego.zegoexpress.constants.ZegoVideoFlipMode;
 import im.zego.zegoexpress.constants.ZegoViewMode;
 import im.zego.zegoexpress.entity.ZegoCanvas;
 import im.zego.zegoexpress.entity.ZegoEngineConfig;
@@ -22,12 +24,26 @@ import im.zego.zegoexpress.entity.ZegoRoomConfig;
 import im.zego.zegoexpress.entity.ZegoStream;
 import im.zego.zegoexpress.entity.ZegoUser;
 import java.lang.ref.WeakReference;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import org.json.JSONException;
 import org.json.JSONObject;
+import im.zego.zegoexpress.entity.ZegoCustomVideoRenderConfig;
+import im.zego.zegoexpress.entity.ZegoCustomVideoCaptureConfig;
+import im.zego.zegoexpress.constants.ZegoVideoFrameFormatSeries;
+import im.zego.zegoexpress.constants.ZegoVideoBufferType;
+import im.zego.zegoexpress.callback.IZegoCustomVideoRenderHandler;
+import im.zego.zegoexpress.callback.IZegoCustomVideoCaptureHandler;
+import im.zego.zegoexpress.entity.ZegoVideoFrameParam;
+import android.os.Handler;
+import android.os.HandlerThread;
+import java.util.concurrent.atomic.AtomicBoolean;
+import android.os.Build;
+import android.os.SystemClock;
+import java.util.concurrent.TimeUnit;
 
 public class ExpressManager {
 
@@ -188,6 +204,87 @@ public class ExpressManager {
                 super.onPlayerStateUpdate(streamID, state, errorCode, extendedData);
                 Log.d(TAG, "onPlayerStateUpdate() called with: streamID = [" + streamID + "], state = [" + state
                     + "], errorCode = [" + errorCode + "], extendedData = [" + extendedData + "]");
+            }
+        });
+    }
+
+    private HandlerThread mThread = null;
+    private volatile Handler serverThreadHandler = null;
+    private final AtomicBoolean isCameraRunning = new AtomicBoolean();
+    private ByteBuffer byteBuffer;
+    protected void finalize() {
+        if(mThread!=null){
+            mThread.quit();
+            mThread = null;
+        }
+    }
+    public void enableMirrorARServerLogic(){
+        mThread = new HandlerThread("camera-cap");
+        mThread.start();
+        serverThreadHandler = new Handler(mThread.getLooper());
+
+        // use setCustomVideoRenderHandler to get remote video origin data
+        ZegoCustomVideoRenderConfig videoRenderConfig = new ZegoCustomVideoRenderConfig();
+        videoRenderConfig.enableEngineRender=true;
+        videoRenderConfig.frameFormatSeries = ZegoVideoFrameFormatSeries.RGB;
+        videoRenderConfig.bufferType = ZegoVideoBufferType.RAW_DATA;
+        ZegoExpressEngine.getEngine().enableCustomVideoRender(true, videoRenderConfig);
+        ZegoExpressEngine.getEngine().setCustomVideoRenderHandler(new IZegoCustomVideoRenderHandler(){
+            /**
+             * Callback for the raw data of the video frame of the remote pull stream, distinguish different streams by streamID
+             *
+             * @param data The raw data of the video frame (for example: RGBA only needs to consider data[0], I420 needs to consider data[0,1,2])
+             * @param dataLength The length of the data (for example: RGBA only needs to consider dataLength[0], I420 needs to consider dataLength[0,1,2])
+             * @param param video frame parameter
+             * @param streamID the stream ID of the pull stream
+             */
+            @Override
+            public void onRemoteVideoFrameRawData(ByteBuffer[] data, int[] dataLength, ZegoVideoFrameParam param, String streamID){
+                long now;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+                    now = SystemClock.elapsedRealtime();
+                } else {
+                    now = TimeUnit.MILLISECONDS.toMillis(SystemClock.elapsedRealtime());
+                }
+
+                // data is R,G,B,A,R,G,B,A ....
+                byte[] tmpData = new byte[data[0].capacity()];
+                data[0].position(0); // Without this line, the decoded video will stuck
+                data[0].get(tmpData);
+                for (int pixel_y = 0; pixel_y < param.height; pixel_y++) {
+                    for (int pixel_x = 0; pixel_x < param.strides[0]; pixel_x++) {
+                        // what is strides? see https://docs.microsoft.com/en-us/windows/win32/medfound/image-stride
+                        // RGBA, we just set R = 0 to test
+                        int idx = pixel_y*param.strides[0]+pixel_x*4+1;
+                        tmpData[idx] =0;
+                        // strides maybe >= width, we just need to process the image part.
+                        if(pixel_x == param.width-1) {
+                            break;
+                        }
+                    }
+                }
+                // Pass the modified data to SDK
+                if (byteBuffer == null) {
+                    byteBuffer = ByteBuffer.allocateDirect(tmpData.length);
+                }
+                byteBuffer.put(tmpData);
+                byteBuffer.flip();
+
+                ZegoExpressEngine.getEngine().sendCustomVideoCaptureRawData(byteBuffer,tmpData.length,param,now);
+            }
+        } );
+        // use enableCustomVideoCapture to send modified data
+        ZegoCustomVideoCaptureConfig videoCaptureConfig = new ZegoCustomVideoCaptureConfig();
+        videoCaptureConfig.bufferType = ZegoVideoBufferType.RAW_DATA;
+        ZegoExpressEngine.getEngine().enableCustomVideoCapture(true, videoCaptureConfig, ZegoPublishChannel.MAIN);
+        ZegoExpressEngine.getEngine().setCustomVideoCaptureHandler(new IZegoCustomVideoCaptureHandler() {
+            @Override
+            public void onStart(ZegoPublishChannel channel) {
+                Log.d(TAG, "IZegoCustomVideoCaptureHandler::onStart");
+            }
+            @Override
+            public void onStop(ZegoPublishChannel channel) {
+                Log.d(TAG, "IZegoCustomVideoCaptureHandler::onStart");
             }
         });
     }
