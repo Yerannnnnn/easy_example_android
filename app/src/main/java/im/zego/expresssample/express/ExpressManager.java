@@ -210,7 +210,7 @@ public class ExpressManager {
 
     private HandlerThread mThread = null;
     private volatile Handler serverThreadHandler = null;
-    private final AtomicBoolean isCameraRunning = new AtomicBoolean();
+    private final AtomicBoolean todoBool = new AtomicBoolean();
     private ByteBuffer byteBuffer;
     protected void finalize() {
         if(mThread!=null){
@@ -219,9 +219,11 @@ public class ExpressManager {
         }
     }
     public void enableMirrorARServerLogic(){
-        mThread = new HandlerThread("camera-cap");
-        mThread.start();
-        serverThreadHandler = new Handler(mThread.getLooper());
+        if(mThread==null){
+            mThread = new HandlerThread("todo: you need to use another thread deal with data");
+            mThread.start();
+            serverThreadHandler = new Handler(mThread.getLooper());
+        }
 
         // use setCustomVideoRenderHandler to get remote video origin data
         ZegoCustomVideoRenderConfig videoRenderConfig = new ZegoCustomVideoRenderConfig();
